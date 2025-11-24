@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ศูนย์รับแจ้งเหตุและประสานงานช่วยเหลือผู้ประสบภัยน้ำท่วม (No API Key)</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        /* โค้ด CSS ที่จำเป็น (คุณสามารถเพิ่มโค้ดใน style.css แยกได้) */
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f9; }
+        main { max-width: 1200px; margin: 20px auto; padding: 0 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .container { background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
+        #map { height: 400px; margin-bottom: 15px; border: 1px solid #ccc; }
+        .form-group { margin-bottom: 15px; }
+        input[type="text"], input[type="tel"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; }
+        .status-0 { background-color: #f0ad4e; } /* รอช่วยเหลือ */
+        .status-1 { background-color: #5cb85c; color: white; } /* ช่วยเหลือแล้ว */
+        /* เพิ่ม CSS สำหรับตารางตามตัวอย่างเดิม */
+    </style>
+</head>
+<body>
+    <header style="background: #007bff; color: #fff; padding: 20px; text-align: center;">
+        <h1>💧 แจ้งขอความช่วยเหลือผู้ประสบภัยน้ำท่วม</h1>
+    </header>
+
+    <main>
+        <section class="container form-section">
+            <h2>🚨 กรอกข้อมูลเพื่อขอความช่วยเหลือ</h2>
+            <form id="reliefForm">
+                <div class="form-group">
+                    <label for="name">ชื่อ-นามสกุล:</label>
+                    <input type="text" id="name" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="phone">เบอร์โทรศัพท์ติดต่อ:</label>
+                    <input type="tel" id="phone" required>
+                </div>
+
+                <div class="form-group">
+                    <button type="button" id="getLocationBtn">📍 ใช้พิกัดปัจจุบัน</button>
+                    <small> (ต้องอนุญาตการเข้าถึงตำแหน่งในเบราว์เซอร์)</small>
+                </div>
+
+                <div class="form-group">
+                    <label>พิกัด (คลิกบนแผนที่หรือใช้ปุ่ม):</label>
+                    <input type="text" id="latitude" placeholder="ละติจูด" readonly required>
+                    <input type="text" id="longitude" placeholder="ลองจิจูด" readonly required>
+                </div>
+
+                <div class="form-group">
+                    <label for="details">รายละเอียดความช่วยเหลือ:</label>
+                    <textarea id="details" rows="4" required placeholder="เช่น: มีผู้สูงอายุ 2 คน, ต้องการเรือและอาหาร"></textarea>
+                </div>
+
+                <button type="submit">ส่งคำขอความช่วยเหลือ</button>
+            </form>
+        </section>
+
+        <section class="container map-section">
+            <h2>📍 ระบุตำแหน่งที่เกิดเหตุ (คลิกบนแผนที่)</h2>
+            <div id="map"></div>
+        </section>
+
+        <section class="container status-section" style="grid-column: 1 / -1; margin-top: 20px;">
+            <h2>✅ ข้อมูลคำขอความช่วยเหลือ</h2>
+            <p>**คำเตือน:** ข้อมูลนี้จะหายไปเมื่อปิดหน้าเว็บ หากไม่มี Firebase Backend</p>
+            <table id="statusTable" style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>ชื่อผู้แจ้ง</th>
+                        <th>เบอร์ติดต่อ</th>
+                        <th>รายละเอียด</th>
+                        <th>พิกัด</th>
+                        <th>สถานะ</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        // 1. ตั้งค่าแผนที่ Leaflet
+const latInput = document.getElementById('latitude');
+const lngInput = document.getElementById('longitude');
+const statusTableBody = document.querySelector('#statusTable tbody');
+const reliefForm = document.getElementById('reliefForm');
+const getLocationBtn = document.getElementById('getLocationBtn');
+
+const initialCoords = [13.75, 100.5]; // กรุงเทพฯ (พิกัดเริ่มต้น)
+const map = L.map('map').setView(initialCoords, 6); 
+
+// ใช้ OpenStreetMap (ไม่ต้องการ API Key)
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 18,
+}).addTo(map);
+
+let marker = null; 
+let cases = []; // เก็บข้อมูลใน Browser เท่านั้น (จะหายไปเมื่อปิด/โหลดหน้าเว็บ)
+const STATUS = { 0: 'รอช่วยเหลือ', 1: 'ช่วยเหลือแล้ว', 2: 'ยกเลิก/ปิดเคส' };
+
+// 2. ฟังก์ชันการดึงพิกัดปัจจุบัน (Geolocation API)
+getLocationBtn.addEventListener('click', () => {
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const lat = position.coords.latitude.toFixed(6);
+                const lng = position.coords.longitude.toFixed(6);
+                
+                latInput.value = lat;
+                lngInput.value = lng;
+                
+                // ย้ายแผนที่ไปที่ตำแหน่งผู้ใช้
+                map.setView([lat, lng], 14); 
+                
+                // เพิ่ม/ย้าย Marker
+                if (marker) { map.removeLayer(marker); }
+                marker = L.marker([lat, lng]).addTo(map)
+                    .bindPopup('ตำแหน่งปัจจุบันของคุณ').openPopup();
+
+                alert('📍 ดึงพิกัดปัจจุบันสำเร็จ!');
+            },
+            (error) => {
+                alert(`❌ ไม่สามารถดึงตำแหน่งได้: ${error.message}. โปรดคลิกบนแผนที่แทน`);
+            }
+        );
+    } else {
+        alert('❌ เบราว์เซอร์ของคุณไม่รองรับ Geolocation.');
+    }
+});
+
+// 3. การคลิกบนแผนที่เพื่อเลือกพิกัด
+map.on('click', (e) => {
+    const lat = e.latlng.lat.toFixed(6);
+    const lng = e.latlng.lng.toFixed(6);
+
+    latInput.value = lat;
+    lngInput.value = lng;
+
+    if (marker) { map.removeLayer(marker); }
+    marker = L.marker([lat, lng]).addTo(map)
+        .bindPopup(`พิกัดที่เลือก: ${lat}, ${lng}`)
+        .openPopup();
+});
+
+// 4. การจัดการฟอร์มเมื่อส่งข้อมูล
+reliefForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    const newCase = {
+        id: cases.length + 1,
+        name: document.getElementById('name').value,
+        phone: document.getElementById('phone').value,
+        latitude: latInput.value,
+        longitude: lngInput.value,
+        details: document.getElementById('details').value,
+        status: 0 
+    };
+
+    // ⚠️ ถ้าไม่มี Backend (Firebase) ข้อมูลจะเก็บในหน่วยความจำเท่านั้น ⚠️
+    cases.push(newCase);
+    renderTable();
+
+    alert('✅ ส่งคำขอความช่วยเหลือเรียบร้อยแล้ว!');
+    reliefForm.reset(); 
+});
+
+// 5. การแสดงผลตาราง (สำหรับเจ้าหน้าที่ดูข้อมูล)
+function createRow(caseData) {
+    const row = statusTableBody.insertRow();
+    row.innerHTML = `
+        <td>${caseData.id}</td>
+        <td>${caseData.name}</td>
+        <td>${caseData.phone}</td>
+        <td>${caseData.details.substring(0, 30)}...</td>
+        <td><a href="https://www.google.com/maps/search/?api=1&query=${caseData.latitude},${caseData.longitude}" target="_blank">${caseData.latitude}, ${caseData.longitude}</a></td>
+        <td class="status-${caseData.status}" style="font-weight: bold;">
+            <select onchange="updateStatus(${caseData.id}, this.value)">
+                <option value="0" ${caseData.status === 0 ? 'selected' : ''}>รอช่วยเหลือ</option>
+                <option value="1" ${caseData.status === 1 ? 'selected' : ''}>ช่วยเหลือแล้ว</option>
+                <option value="2" ${caseData.status === 2 ? 'selected' : ''}>ยกเลิก/ปิดเคส</option>
+            </select>
+        </td>
+    `;
+    // กำหนดสีพื้นหลังให้เซลล์สถานะตามค่าที่เลือก
+    const statusCell = row.cells[5];
+    statusCell.style.backgroundColor = getStatusColor(caseData.status);
+    statusCell.style.color = caseData.status === 1 ? 'white' : 'black';
+}
+
+function getStatusColor(status) {
+    switch (status) {
+        case 1: return '#5cb85c'; // ช่วยเหลือแล้ว (เขียว)
+        case 0: return '#f0ad4e'; // รอช่วยเหลือ (ส้ม)
+        case 2: return '#d9534f'; // ยกเลิก/ปิดเคส (แดง)
+        default: return '#ccc';
+    }
+}
+
+function renderTable() {
+    statusTableBody.innerHTML = ''; 
+    cases.forEach(createRow);
+}
+
+window.updateStatus = (id, newStatus) => {
+    const index = cases.findIndex(c => c.id === id);
+    if (index !== -1) {
+        cases[index].status = parseInt(newStatus);
+        renderTable(); 
+    }
+};
+
+renderTable();
+    </script>
+
+</body>
+</html>
